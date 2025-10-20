@@ -1,6 +1,10 @@
-name: Auto Build Packages
+name: Build Packages
 
 on:
+  # 每日UTC时间0点触发（北京时间+8小时，即上午8点）
+  schedule:
+    - cron: '0 0 * * *'
+  # 保留仓库事件调度触发（可选，用于手动触发）
   repository_dispatch:
     types: [release-build]
 
@@ -22,8 +26,17 @@ jobs:
       - name: Create release tag and release
         id: create_release
         run: |
-          TAG_NAME="${{ github.event.client_payload.release_tag }}"
-          RELEASE_NAME="${{ github.event.client_payload.release_name }}"
+          # 区分触发方式，设置标签和发布名称
+          if [ "${{ github.event_name }}" = "repository_dispatch" ]; then
+            # 若为手动触发，使用client_payload参数
+            TAG_NAME="${{ github.event.client_payload.release_tag }}"
+            RELEASE_NAME="${{ github.event.client_payload.release_name }}"
+          else
+            # 若为定时触发，使用"nightly-日期"作为标签（如nightly-20251020）
+            TAG_NAME="nightly-$(date +%Y%m%d)"
+            RELEASE_NAME="Nightly Build $(date +%Y-%m-%d)"
+          fi
+          
           echo "Creating tag: $TAG_NAME"
           echo "Creating release: $RELEASE_NAME"
           
@@ -31,21 +44,25 @@ jobs:
           git config --local user.name "github-actions[bot]"
           git tag "$TAG_NAME" || echo "Tag already exists"
           git push origin "$TAG_NAME" || echo "Tag already pushed"
+          
+          # 输出标签名供后续步骤使用
+          echo "tag_name=$TAG_NAME" >> $GITHUB_OUTPUT
 
       - name: Create GitHub Release
         uses: ncipollo/release-action@v1
         with:
-          name: ${{ github.event.client_payload.release_name }}
-          tag: ${{ github.event.client_payload.release_tag }}
+          name: ${{ github.event_name == 'repository_dispatch' && github.event.client_payload.release_name || format('Nightly Build {0}', github.run_date) }}
+          tag: ${{ steps.create_release.outputs.tag_name }}
           token: ${{ secrets.GITHUB_TOKEN }}
           draft: false
-          prerelease: false
+          prerelease: true  #  nightly版本标记为预发布
           body: |
-            ## Release ${{ github.event.client_payload.release_tag }}
+            ## ${{ steps.create_release.outputs.tag_name }}
             
-            This release contains OpenWrt packages built for multiple architectures.
+            This is an automated nightly build of OpenWrt packages.
             
-            **Source Repository:** ${{ github.event.client_payload.source_repository }}
+            **Build Date:** $(date +%Y-%m-%d)
+            **Source Repository:** ${{ github.repositoryUrl }}
 
   build:
     name: Build ${{ matrix.arch }}-${{ matrix.sdk }}
@@ -98,7 +115,7 @@ jobs:
       - name: Upload packages to release
         uses: ncipollo/release-action@v1
         with:
-          tag: ${{ github.event.client_payload.release_tag }}
+          tag: ${{ needs.create-release.outputs.tag_name }}
           token: ${{ secrets.GITHUB_TOKEN }}
           allowUpdates: true
           replacesArtifacts: false
