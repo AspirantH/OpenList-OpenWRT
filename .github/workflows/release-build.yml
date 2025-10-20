@@ -1,21 +1,7 @@
 name: Build Packages
 
 on:
-  workflow_dispatch:
-    inputs:
-      release_tag:
-        description: 'Release Tag (e.g. v1.0.0)'
-        required: true
-        type: string
-      release_name:
-        description: 'Release Name (e.g. Release v1.0.0)'
-        required: true
-        type: string
-      source_repository:
-        description: 'Source Repository URL (e.g. https://github.com/xxx/xxx)'
-        required: false
-        type: string
-        # 移除了使用github.repository的默认值
+  workflow_dispatch: 
 
 permissions:
   contents: write
@@ -26,28 +12,17 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       release_id: ${{ steps.create_release.outputs.id }}
-      source_repo: ${{ steps.set_source_repo.outputs.source_repo }}
     steps:
       - uses: actions/checkout@v4
         with:
           ref: main
           fetch-depth: 0
 
-      # 添加步骤设置源码仓库地址，处理默认值
-      - name: Set source repository
-        id: set_source_repo
-        run: |
-          if [ -z "${{ github.event.inputs.source_repository }}" ]; then
-            echo "source_repo=${{ github.repositoryUrl }}" >> $GITHUB_OUTPUT
-          else
-            echo "source_repo=${{ github.event.inputs.source_repository }}" >> $GITHUB_OUTPUT
-          fi
-
       - name: Create release tag and release
         id: create_release
         run: |
-          TAG_NAME="${{ github.event.inputs.release_tag }}"
-          RELEASE_NAME="${{ github.event.inputs.release_name }}"
+          TAG_NAME="${{ github.event.inputs.release_tag || 'v1.0.0' }}"
+          RELEASE_NAME="${{ github.event.inputs.release_name || 'Release v1.0.0' }}"
           echo "Creating tag: $TAG_NAME"
           echo "Creating release: $RELEASE_NAME"
           
@@ -55,21 +30,22 @@ jobs:
           git config --local user.name "github-actions[bot]"
           git tag "$TAG_NAME" || echo "Tag already exists"
           git push origin "$TAG_NAME" || echo "Tag already pushed"
+          echo "id=$TAG_NAME" >> $GITHUB_OUTPUT  # 输出标签作为release_id
 
       - name: Create GitHub Release
         uses: ncipollo/release-action@v1
         with:
-          name: ${{ github.event.inputs.release_name }}
-          tag: ${{ github.event.inputs.release_tag }}
+          name: ${{ github.event.inputs.release_name || 'Release v1.0.0' }}
+          tag: ${{ github.event.inputs.release_tag || 'v1.0.0' }}
           token: ${{ secrets.GITHUB_TOKEN }}
           draft: false
           prerelease: false
           body: |
-            ## Release ${{ github.event.inputs.release_tag }}
+            ## Release ${{ github.event.inputs.release_tag || 'v1.0.0' }}
             
-            This release contains OpenWrt packages built for multiple architectures.
+            This release contains OpenWrt packages built for x86 architectures.
             
-            **Source Repository:** ${{ steps.set_source_repo.outputs.source_repo }}
+            **Source Repository:** ${{ github.repository }}
 
   build:
     name: Build ${{ matrix.arch }}-${{ matrix.sdk }}
@@ -82,6 +58,7 @@ jobs:
           - x86_64
         sdk:
           - openwrt-24.10
+          - SNAPSHOT
 
     steps:
       - uses: actions/checkout@v4
@@ -122,7 +99,7 @@ jobs:
       - name: Upload packages to release
         uses: ncipollo/release-action@v1
         with:
-          tag: ${{ github.event.inputs.release_tag }}
+          tag: ${{ github.event.inputs.release_tag || 'v1.0.0' }}
           token: ${{ secrets.GITHUB_TOKEN }}
           allowUpdates: true
           replacesArtifacts: false
