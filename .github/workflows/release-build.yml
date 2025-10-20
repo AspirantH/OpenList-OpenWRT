@@ -1,23 +1,21 @@
 name: Build Packages
 
-# 同时支持仓库事件和手动触发
 on:
-  repository_dispatch:
-    types: [release-build]
   workflow_dispatch:
     inputs:
       release_tag:
-        description: '发布标签 (例如 v1.0.0)'
+        description: 'Release Tag (e.g. v1.0.0)'
         required: true
-        default: 'v1.0.0'
+        type: string
       release_name:
-        description: '发布名称'
+        description: 'Release Name (e.g. Release v1.0.0)'
         required: true
-        default: 'OpenWRT 软件包'
+        type: string
       source_repository:
-        description: '源仓库地址'
+        description: 'Source Repository URL (e.g. https://github.com/xxx/xxx)'
         required: false
-        default: ${{ github.repositoryUrl }}
+        type: string
+        # 移除了使用github.repository的默认值
 
 permissions:
   contents: write
@@ -28,63 +26,50 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       release_id: ${{ steps.create_release.outputs.id }}
-      tag_name: ${{ steps.determine_tag.outputs.tag_name }}
+      source_repo: ${{ steps.set_source_repo.outputs.source_repo }}
     steps:
       - uses: actions/checkout@v4
         with:
           ref: main
           fetch-depth: 0
 
-      - name: 确定标签和发布名称
-        id: determine_tag
+      # 添加步骤设置源码仓库地址，处理默认值
+      - name: Set source repository
+        id: set_source_repo
         run: |
-          # 优先使用手动输入，如果没有则使用repository_dispatch的 payload
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            TAG_NAME="${{ github.event.inputs.release_tag }}"
-            RELEASE_NAME="${{ github.event.inputs.release_name }}"
-            SOURCE_REPO="${{ github.event.inputs.source_repository }}"
+          if [ -z "${{ github.event.inputs.source_repository }}" ]; then
+            echo "source_repo=${{ github.repositoryUrl }}" >> $GITHUB_OUTPUT
           else
-            TAG_NAME="${{ github.event.client_payload.release_tag }}"
-            RELEASE_NAME="${{ github.event.client_payload.release_name }}"
-            SOURCE_REPO="${{ github.event.client_payload.source_repository }}"
+            echo "source_repo=${{ github.event.inputs.source_repository }}" >> $GITHUB_OUTPUT
           fi
-          
-          # 确保有默认值
-          TAG_NAME=${TAG_NAME:-"auto-$(date +%Y%m%d-%H%M%S)"}
-          RELEASE_NAME=${RELEASE_NAME:-"Auto Build $(date +%Y%m%d)"}
-          SOURCE_REPO=${SOURCE_REPO:-"${{ github.repositoryUrl }}"}
-          
-          echo "TAG_NAME=$TAG_NAME"
-          echo "RELEASE_NAME=$RELEASE_NAME"
-          echo "SOURCE_REPO=$SOURCE_REPO"
-          
-          # 输出到环境变量供后续步骤使用
-          echo "tag_name=$TAG_NAME" >> $GITHUB_OUTPUT
-          echo "release_name=$RELEASE_NAME" >> $GITHUB_OUTPUT
-          echo "source_repo=$SOURCE_REPO" >> $GITHUB_OUTPUT
 
-      - name: 创建标签
+      - name: Create release tag and release
+        id: create_release
         run: |
+          TAG_NAME="${{ github.event.inputs.release_tag }}"
+          RELEASE_NAME="${{ github.event.inputs.release_name }}"
+          echo "Creating tag: $TAG_NAME"
+          echo "Creating release: $RELEASE_NAME"
+          
           git config --local user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git config --local user.name "github-actions[bot]"
-          git tag "${{ steps.determine_tag.outputs.tag_name }}" || echo "标签已存在"
-          git push origin "${{ steps.determine_tag.outputs.tag_name }}" || echo "标签已推送"
+          git tag "$TAG_NAME" || echo "Tag already exists"
+          git push origin "$TAG_NAME" || echo "Tag already pushed"
 
-      - name: 创建GitHub发布
-        id: create_release
+      - name: Create GitHub Release
         uses: ncipollo/release-action@v1
         with:
-          name: ${{ steps.determine_tag.outputs.release_name }}
-          tag: ${{ steps.determine_tag.outputs.tag_name }}
+          name: ${{ github.event.inputs.release_name }}
+          tag: ${{ github.event.inputs.release_tag }}
           token: ${{ secrets.GITHUB_TOKEN }}
           draft: false
           prerelease: false
           body: |
-            ## 发布 ${{ steps.determine_tag.outputs.tag_name }}
+            ## Release ${{ github.event.inputs.release_tag }}
             
-            此发布包含为多种架构构建的OpenWrt软件包。
+            This release contains OpenWrt packages built for multiple architectures.
             
-            **源仓库:** ${{ steps.determine_tag.outputs.source_repo }}
+            **Source Repository:** ${{ steps.set_source_repo.outputs.source_repo }}
 
   build:
     name: Build ${{ matrix.arch }}-${{ matrix.sdk }}
@@ -97,7 +82,6 @@ jobs:
           - x86_64
         sdk:
           - openwrt-24.10
-          - SNAPSHOT
 
     steps:
       - uses: actions/checkout@v4
@@ -105,16 +89,16 @@ jobs:
           ref: main
           fetch-depth: 0
 
-      - name: 静态链接构建
+      - name: Build with Static Linking
         run: |
           sed -i '/golang-package/a \\tGO_PKG_DEFAULT_LDFLAGS:=-w -s -extldflags "-static"' openlist/Makefile
 
-      - name: UPX压缩
+      - name: UPX Compress
         if: ${{ matrix.arch != 'loongarch64_generic' && matrix.arch != 'mips64_mips64r2' && matrix.arch != 'mips64_octeonplus' && matrix.arch != 'mips64el_mips64r2' && matrix.arch != 'riscv64_riscv64' }}
         run: |
-          sed -i '/INSTALL_DATA/a \\t/usr/bin/upx --lzma --best $(1)\/usr\/bin\/openlist' openlist/Makefile
+          sed -i '/openlist.init/a \\t/usr/bin/upx --lzma --best $(1)\/usr\/bin\/openlist' openlist/Makefile
 
-      - name: 构建软件包
+      - name: Build Packages
         uses: OpenListTeam/openwrt-gh-action-sdk@go1.25
         env:
           ARCH: ${{ matrix.arch }}-${{ matrix.sdk }}
@@ -122,7 +106,7 @@ jobs:
           PACKAGES: luci-app-openlist
           NO_REFRESH_CHECK: true
 
-      - name: 上传构建产物
+      - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.arch }}-${{ matrix.sdk }}
@@ -130,15 +114,15 @@ jobs:
             bin/packages/${{ matrix.arch }}/packages_ci/*.apk
             bin/packages/${{ matrix.arch }}/packages_ci/*.ipk
 
-      - name: 创建压缩文件
+      - name: Create compress files
         continue-on-error: true
         run: |
           tar -zcvf ${{ matrix.sdk }}-${{ matrix.arch }}.tar.gz -C bin/packages/${{ matrix.arch }}/ packages_ci
 
-      - name: 上传到发布
+      - name: Upload packages to release
         uses: ncipollo/release-action@v1
         with:
-          tag: ${{ needs.create-release.outputs.tag_name }}
+          tag: ${{ github.event.inputs.release_tag }}
           token: ${{ secrets.GITHUB_TOKEN }}
           allowUpdates: true
           replacesArtifacts: false
