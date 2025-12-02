@@ -1,14 +1,23 @@
-name: Auto Build Packages
+name: Auto Build luci-app-openlist on OpenList Release
 
+# 触发条件：监听原仓库（OpenListTeam/OpenList）的新版本发布事件
 on:
-  schedule:
-    - cron: '0 0 * * *'  # 每日UTC 0点（北京时间8点）触发
   repository_dispatch:
-    types: [release-build]
+    types: [openlist-release]  # 自定义事件类型，用于接收原仓库的触发通知
+  # 可选：保留手动触发入口（如需手动测试）
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: 'OpenList 版本标签（如 v1.0.0）'
+        required: true
+        default: 'v1.0.0'
+      release_name:
+        description: '发布名称'
+        required: true
+        default: 'luci-app-openlist Build for OpenList v1.0.0'
 
 permissions:
-  contents: write
-  packages: read  # 新增：允许读取GitHub Packages（可能影响SDK拉取）
+  contents: write  # 允许创建Release和上传产物
 
 jobs:
   create-release:
@@ -16,183 +25,167 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       release_id: ${{ steps.create_release.outputs.id }}
-      tag_name: ${{ steps.set_tag.outputs.tag_name }}
+      release_tag: ${{ steps.set_release_info.outputs.release_tag }}
     steps:
       - uses: actions/checkout@v4
         with:
           ref: main
           fetch-depth: 0
 
-      - name: Set Tag and Release Info
-        id: set_tag
+      - name: Set Release Info
+        id: set_release_info
         run: |
+          # 区分触发方式：仓库事件触发 vs 手动触发
           if [ "${{ github.event_name }}" = "repository_dispatch" ]; then
-            TAG_NAME="${{ github.event.client_payload.release_tag }}"
-            RELEASE_NAME="${{ github.event.client_payload.release_name }}"
+            # 接收原仓库传递的版本信息（需原仓库配置对应 payload）
+            RELEASE_TAG="luci-openlist-${{ github.event.client_payload.release_tag }}"
+            RELEASE_NAME="luci-app-openlist for OpenList ${{ github.event.client_payload.release_tag }}"
+            SOURCE_REPO="${{ github.event.client_payload.source_repo || 'https://github.com/OpenListTeam/OpenList' }}"
           else
-            TAG_NAME="nightly-$(date +%Y%m%d)-$(git rev-parse --short HEAD)"
-            RELEASE_NAME="Nightly Build $(date +%Y-%m-%d) (${{ github.sha }})"
+            # 手动触发时使用输入的版本信息
+            RELEASE_TAG="luci-openlist-${{ github.event.inputs.release_tag }}"
+            RELEASE_NAME="${{ github.event.inputs.release_name }}"
+            SOURCE_REPO="https://github.com/OpenListTeam/OpenList"
           fi
-          
-          echo "tag_name=$TAG_NAME" >> $GITHUB_OUTPUT
-          echo "release_name=$RELEASE_NAME" >> $GITHUB_OUTPUT
-          echo "TAG_NAME: $TAG_NAME"
-          echo "RELEASE_NAME: $RELEASE_NAME"
 
-      - name: Create Tag (本地+远程)
+          # 输出变量供后续步骤使用
+          echo "release_tag=$RELEASE_TAG" >> $GITHUB_OUTPUT
+          echo "release_name=$RELEASE_NAME" >> $GITHUB_OUTPUT
+          echo "source_repo=$SOURCE_REPO" >> $GITHUB_OUTPUT
+
+          echo "=== 发布信息 ==="
+          echo "Tag: $RELEASE_TAG"
+          echo "Name: $RELEASE_NAME"
+          echo "Source Repo: $SOURCE_REPO"
+
+      - name: Create/Update Git Tag
         run: |
-          TAG_NAME="${{ steps.set_tag.outputs.tag_name }}"
+          RELEASE_TAG="${{ steps.set_release_info.outputs.release_tag }}"
+          # 配置Git用户信息
           git config --local user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git config --local user.name "github-actions[bot]"
-          
-          # 优化Tag删除逻辑，避免 grep 匹配异常
-          if git rev-parse --verify --quiet "$TAG_NAME" >/dev/null; then
-            git tag -d "$TAG_NAME"
-          fi
-          if git ls-remote --tags origin "refs/tags/$TAG_NAME" >/dev/null 2>&1; then
-            git push origin ":refs/tags/$TAG_NAME"
-          fi
-          
-          git tag -a "$TAG_NAME" -m "Nightly Build Tag: $TAG_NAME"
-          git push origin "$TAG_NAME" --force
-          sleep 5  # 延长等待时间，确保GitHub完全同步Tag
 
-      - name: Create/Update GitHub Release
+          # 删除已存在的本地/远程Tag（避免冲突）
+          if git rev-parse --verify --quiet "$RELEASE_TAG" >/dev/null; then
+            git tag -d "$RELEASE_TAG"
+          fi
+          if git ls-remote --tags origin "refs/tags/$RELEASE_TAG" >/dev/null 2>&1; then
+            git push origin ":refs/tags/$RELEASE_TAG"
+          fi
+
+          # 创建并推送新Tag
+          git tag -a "$RELEASE_TAG" -m "luci-app-openlist build for OpenList ${{ github.event.client_payload.release_tag || github.event.inputs.release_tag }}"
+          git push origin "$RELEASE_TAG" --force
+          sleep 5  # 等待GitHub同步Tag
+
+      - name: Create GitHub Release
         id: create_release
         uses: ncipollo/release-action@v1
         with:
-          name: ${{ steps.set_tag.outputs.release_name }}
-          tag: ${{ steps.set_tag.outputs.tag_name }}
+          name: ${{ steps.set_release_info.outputs.release_name }}
+          tag: ${{ steps.set_release_info.outputs.release_tag }}
           token: ${{ secrets.GITHUB_TOKEN }}
           draft: false
-          prerelease: true
-          # 修复date命令不执行的问题：使用env传递日期
+          prerelease: false
           body: |
-            ## ${{ steps.set_tag.outputs.tag_name }}
+            ## ${{ steps.set_release_info.outputs.release_tag }}
             
-            This is an automated nightly build of OpenWrt packages.
+            自动构建的 luci-app-openlist 适配版本，基于 OpenList 官方新版本发布触发。
             
-            **Build Date:** ${{ env.BUILD_DATE }}
-            **Source Commit:** ${{ github.sha }}
-            **Source Repository:** ${{ github.repositoryUrl }}
-          env:
-            BUILD_DATE: ${{ steps.set_tag.outputs.release_name =~ /\(([0-9]{4}-[0-9]{2}-[0-9]{2})\)/ && regexReplaceAll('\D', '$1', '') || formatDate(utcNow(), 'yyyy-MM-dd') }}
-          allowUpdates: true
-          replacesArtifacts: false
+            ### 构建信息
+            - **适配 OpenList 版本**: ${{ github.event.client_payload.release_tag || github.event.inputs.release_tag }}
+            - **架构支持**: x86_64
+            - **OpenList 源码仓库**: ${{ steps.set_release_info.outputs.source_repo }}
+          allowUpdates: true  # 允许更新已存在的Release
+          replacesArtifacts: false  # 不替换已上传的产物
 
-  build:
-    name: Build ${{ matrix.arch }}-${{ matrix.sdk }}
+  build-x86_64:
+    name: Build x86_64-${{ matrix.sdk }}
     runs-on: ubuntu-latest
     needs: create-release
     strategy:
       fail-fast: false
       matrix:
-        arch: [x86_64]
-        sdk: [openwrt-24.10]
+        arch: [x86_64]  # 仅保留 x86_64 架构
+        sdk: [openwrt-24.10, SNAPSHOT]  # 保留原有的两个 SDK 版本
 
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: main  # 关键修复：构建应基于main分支源码，而非Tag（Tag仅用于标记版本）
+          ref: main
           fetch-depth: 0
 
-      - name: 安装依赖工具
+      - name: 安装依赖工具（UPX 压缩）
         run: |
-          # 确保UPX和必要工具安装（避免编译时找不到命令）
           sudo apt-get update && sudo apt-get install -y upx-ucl
-          # 验证工具安装
-          upx --version || echo "UPX安装失败"
+          upx --version || echo "UPX 安装完成"
 
-      - name: 修复Makefile静态编译配置
+      - name: 配置静态链接编译
         run: |
-          # 更可靠的Makefile修改方式：定位正确的位置（golang-package目标）
           MAKEFILE="openlist/Makefile"
+          # 确保文件存在
           if [ ! -f "$MAKEFILE" ]; then
-            echo "错误：找不到Makefile文件 $MAKEFILE"
+            echo "错误：找不到 Makefile 文件 $MAKEFILE"
             exit 1
           fi
-          
-          # 确保GO_PKG_DEFAULT_LDFLAGS配置正确（静态编译关键）
-          if ! grep -q "GO_PKG_DEFAULT_LDFLAGS" "$MAKEFILE"; then
-            # 如果没有该配置，添加到golang-package目标下
-            sed -i '/define Build\/golang-package/i \\tGO_PKG_DEFAULT_LDFLAGS:=-w -s -extldflags "-static"' "$MAKEFILE"
+          # 添加/替换静态链接参数（避免重复添加）
+          if ! grep -q "GO_PKG_DEFAULT_LDFLAGS:=-w -s -extldflags \"-static\"" "$MAKEFILE"; then
+            sed -i '/golang-package/a \\tGO_PKG_DEFAULT_LDFLAGS:=-w -s -extldflags "-static"' "$MAKEFILE"
           else
-            # 如果已有配置，替换为静态编译参数
             sed -i 's/GO_PKG_DEFAULT_LDFLAGS:=.*/GO_PKG_DEFAULT_LDFLAGS:=-w -s -extldflags "-static"/' "$MAKEFILE"
           fi
-          
-          # 显示修改后的Makefile关键部分（用于调试）
-          grep -A 5 -B 5 "GO_PKG_DEFAULT_LDFLAGS" "$MAKEFILE"
 
-      - name: 配置UPX压缩（仅支持架构）
+      - name: 配置 UPX 压缩（x86_64 支持）
         run: |
           MAKEFILE="openlist/Makefile"
-          UNSUPPORTED_ARCHS=("loongarch64_generic" "mips64_mips64r2" "mips64_octeonplus" "mips64el_mips64r2" "riscv64_riscv64")
-          
-          if [[ ! " ${UNSUPPORTED_ARCHS[@]} " =~ " ${matrix.arch} " ]]; then
-            # 确保UPX命令添加到正确位置（安装后压缩）
-            if ! grep -q "/usr/bin/upx" "$MAKEFILE"; then
-              sed -i '/define Package\/openlist\/install/a \\t/usr/bin/upx --lzma --best $(1)/usr/bin/openlist || true' "$MAKEFILE"
-            fi
-          else
-            echo "当前架构 ${matrix.arch} 不支持UPX，跳过压缩"
+          # x86_64 支持 UPX，直接添加压缩命令（避免重复）
+          if ! grep -q "/usr/bin/upx --lzma --best" "$MAKEFILE"; then
+            sed -i '/define Package\/openlist\/install/a \\t/usr/bin/upx --lzma --best $(1)/usr/bin/openlist || true' "$MAKEFILE"
           fi
 
-      - name: 构建OpenWrt包（带详细日志）
+      - name: 构建 OpenWrt 包（带详细日志）
         uses: OpenListTeam/openwrt-gh-action-sdk@go1.25
         env:
           ARCH: ${{ matrix.arch }}-${{ matrix.sdk }}
           FEEDNAME: packages_ci
-          PACKAGES: luci-app-openlist openlist  # 关键修复：同时构建依赖包openlist
+          PACKAGES: openlist luci-app-openlist  # 同时构建依赖包 openlist（关键修复）
           NO_REFRESH_CHECK: true
           VERBOSE: 1  # 开启详细日志，便于调试
 
-      - name: 显示构建输出目录结构（关键调试步骤）
+      - name: 检查构建产物
         run: |
-          echo "=== 构建输出目录结构 ==="
-          find bin/ -type f -name "*.ipk" -o -name "*.apk" || echo "未找到任何ipk/apk文件"
-          echo "=== bin/packages 目录详情 ==="
-          ls -laR bin/packages/ || echo "bin/packages目录不存在"
-
-      - name: 上传构建产物到Artifacts（用于调试）
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ matrix.arch }}-${{ matrix.sdk }}-build-output
-          path: |
-            bin/packages/**/*.ipk
-            bin/packages/**/*.apk
-            bin/packages/**/*.tar.gz
-          retention-days: 7
+          echo "=== 构建产物目录结构 ==="
+          BUILD_DIR="bin/packages/${{ matrix.arch }}/packages_ci"
+          ls -la "$BUILD_DIR" || echo "构建目录不存在"
+          # 检查是否有 ipk/apk 文件
+          find "$BUILD_DIR" -name "*.ipk" -o -name "*.apk" || echo "未找到构建产物"
 
       - name: 打包构建产物
         run: |
-          # 确保构建产物存在
           BUILD_DIR="bin/packages/${{ matrix.arch }}/packages_ci"
-          if [ ! -d "$BUILD_DIR" ]; then
-            echo "错误：构建目录 $BUILD_DIR 不存在"
-            exit 1
-          fi
-          
-          # 检查是否有产物文件
-          if [ $(find "$BUILD_DIR" -name "*.ipk" -o -name "*.apk" | wc -l) -eq 0 ]; then
-            echo "错误：构建目录中没有找到ipk/apk文件"
-            exit 1
-          fi
-          
+          OUTPUT_NAME="${{ matrix.sdk }}-x86_64-luci-app-openlist.tar.gz"
           # 创建压缩包（包含所有产物）
-          mkdir -p build-output
-          tar -zcvf build-output/${{ matrix.sdk }}-${{ matrix.arch }}-packages.tar.gz -C "$BUILD_DIR" .
-          echo "压缩包创建成功："
-          ls -la build-output/
+          tar -zcvf "$OUTPUT_NAME" -C "$BUILD_DIR" .
+          echo "压缩包创建完成：$OUTPUT_NAME"
+          ls -la "$OUTPUT_NAME"
 
-      - name: 上传压缩包到GitHub Release
+      - name: 上传产物到 GitHub Release
         uses: ncipollo/release-action@v1
         with:
-          tag: ${{ needs.create-release.outputs.tag_name }}
+          tag: ${{ needs.create-release.outputs.release_tag }}
           token: ${{ secrets.GITHUB_TOKEN }}
           allowUpdates: true
           replacesArtifacts: false
           omitBody: true
           omitName: true
-          artifacts: "build-output/${{ matrix.sdk }}-${{ matrix.arch }}-packages.tar.gz"
+          artifacts: "${{ matrix.sdk }}-x86_64-luci-app-openlist.tar.gz"
           artifactContentType: "application/gzip"
+
+      - name: 上传产物到 Artifacts（用于备份/调试）
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.sdk }}-x86_64
+          path: |
+            bin/packages/${{ matrix.arch }}/packages_ci/*.ipk
+            bin/packages/${{ matrix.arch }}/packages_ci/*.apk
+          retention-days: 14  # 保留14天，便于调试
