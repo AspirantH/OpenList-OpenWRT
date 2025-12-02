@@ -34,8 +34,8 @@ get_config() {
 	# scheme
 	config_get ssl $1 ssl 1
 	config_get force_https $1 force_https 0
-	config_get ssl_cert $1 ssl_cert "/etc/uhttpd.crt"
-	config_get ssl_key $1 ssl_key "/etc/uhttpd.key"
+	config_get ssl_cert $1 ssl_cert "/etc/ssl.crt"
+	config_get ssl_key $1 ssl_key "/etc/ssl.key"
 
 	# database
 	config_get database_type $1 database_type "sqlite3"
