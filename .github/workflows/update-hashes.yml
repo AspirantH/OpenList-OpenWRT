@@ -35,6 +35,16 @@ jobs:
           FRONTEND_VERSION=$(curl -s https://api.github.com/repos/OpenListTeam/OpenList-Frontend/releases/latest | jq -r '.tag_name' | sed 's/^v//')
           echo "Latest Frontend version: $FRONTEND_VERSION"
           
+          # 版本号格式校验（语义化版本 x.y.z）
+          if ! echo "$OPENLIST_VERSION" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "Invalid OpenList version format: $OPENLIST_VERSION"
+            exit 1
+          fi
+          if ! echo "$FRONTEND_VERSION" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "Invalid Frontend version format: $FRONTEND_VERSION"
+            exit 1
+          fi
+          
           echo "openlist_version=$OPENLIST_VERSION" >> $GITHUB_OUTPUT
           echo "frontend_version=$FRONTEND_VERSION" >> $GITHUB_OUTPUT
 
@@ -45,7 +55,7 @@ jobs:
           URL="https://codeload.github.com/OpenListTeam/OpenList/tar.gz/v${VERSION}"
           
           echo "Downloading OpenList v${VERSION}..."
-          wget -O "openlist-${VERSION}.tar.gz" "$URL"
+          wget -O "openlist-${VERSION}.tar.gz" "$URL" || { echo "Failed to download OpenList"; exit 1; }
           
           HASH=$(sha256sum "openlist-${VERSION}.tar.gz" | cut -d' ' -f1)
           echo "OpenList hash: $HASH"
@@ -60,7 +70,7 @@ jobs:
           URL="https://github.com/OpenListTeam/OpenList-Frontend/releases/download/v${VERSION}/openlist-frontend-dist-v${VERSION}.tar.gz"
           
           echo "Downloading Frontend v${VERSION}..."
-          wget -O "openlist-frontend-dist-v${VERSION}.tar.gz" "$URL"
+          wget -O "openlist-frontend-dist-v${VERSION}.tar.gz" "$URL" || { echo "Failed to download Frontend"; exit 1; }
           
           HASH=$(sha256sum "openlist-frontend-dist-v${VERSION}.tar.gz" | cut -d' ' -f1)
           echo "Frontend hash: $HASH"
@@ -81,14 +91,10 @@ jobs:
           echo "  Frontend version: $FRONTEND_VERSION"
           echo "  Frontend hash: $FRONTEND_HASH"
           
-          # Update PKG_VERSION and PKG_WEB_VERSION to match OpenList main repo
+          # Update version and hash in Makefile
           sed -i "s/^PKG_VERSION:=.*/PKG_VERSION:=$OPENLIST_VERSION/" openlist/Makefile
           sed -i "s/^PKG_WEB_VERSION:=.*/PKG_WEB_VERSION:=$FRONTEND_VERSION/" openlist/Makefile
-          
-          # Update PKG_HASH
           sed -i "s/^PKG_HASH:=.*/PKG_HASH:=$OPENLIST_HASH/" openlist/Makefile
-          
-          # Update Frontend HASH
           sed -i "/define Download\/openlist-frontend/,/endef/ s/^  HASH:=.*/  HASH:=$FRONTEND_HASH/" openlist/Makefile
 
       - name: Check for changes
@@ -125,7 +131,6 @@ jobs:
         run: |
           git add openlist/Makefile
           git commit -m "Update v${{ steps.vars.outputs.openlist_version }}"
-          
           git push origin HEAD:${{ github.ref_name }}
 
       - name: Trigger release build
@@ -143,6 +148,18 @@ jobs:
               "triggered_by": "${{ github.event.client_payload.triggered_by || github.actor }}",
               "trigger_reason": "update-hashes"
             }
+
+      - name: Notify failure
+        if: failure()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: `Workflow failed: ${context.workflow}`,
+              body: `Run URL: ${context.runUrl}`
+            })
 
       - name: Summary
         run: |
