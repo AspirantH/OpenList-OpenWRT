@@ -91,6 +91,7 @@ jobs:
           # 可扩展其他架构，如 armvirt-64、mipsel_24kc 等
         sdk:
           - openwrt-24.10
+          - SNAPSHOT
 
     steps:
       - uses: actions/checkout@v4
