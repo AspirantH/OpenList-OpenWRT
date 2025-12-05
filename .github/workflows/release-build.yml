@@ -1,4 +1,4 @@
-name: Build Packages
+name: Manual Build Packages
 
 on:
   workflow_dispatch:
